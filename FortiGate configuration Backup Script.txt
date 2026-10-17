@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+import requests
+import json
+import hashlib
+import os
+from datetime import datetime
+from pathlib import Path
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
+FGT_HOST = "172.17.100.1"
+API_TOKEN = "YOUR_API_TOKEN"
+BACKUP_DIR = "fortigate_backups"
+requests.packages.urllib3.disable_warnings()
+HEADERS = {
+"Authorization": f"Bearer {API_TOKEN}"
+}
+# --------------------------------------------------
+# API FUNCTIONS
+# --------------------------------------------------
+def get_fortigate_config(endpoint):
+url = f"https://{FGT_HOST}/api/v2/cmdb/{endpoint}"
+response = requests.get(
+url,
+headers=HEADERS,
+verify=False,
+timeout=30
+)
+response.raise_for_status()
+return response.json().get("results", [])
+# --------------------------------------------------
+# PARSERS
+# --------------------------------------------------
+def parse_interfaces(data):
+parsed = []
+for item in data:
+parsed.append({
+"name": item.get("name"),
+"ip": item.get("ip"),
+"allowaccess": item.get("allowaccess"),
+"status": item.get("status"),
+"role": item.get("role"),
+"alias": item.get("alias"),
+"vdom": item.get("vdom")
+})
+return sorted(parsed, key=lambda x: x["name"])
+def parse_routes(data):
+parsed = []
+for route in data:
+parsed.append({
+"seq-num": route.get("seq-num"),
+"dst": route.get("dst"),
+"gateway": route.get("gateway"),
+"device": route.get("device"),
+"distance": route.get("distance"),
+"status": route.get("status")
+})
+return sorted(parsed, key=lambda x: x["seq-num"])
+# --------------------------------------------------
+# HASH FUNCTIONS
+# --------------------------------------------------
+def calculate_hash(data):
+content = json.dumps(
+data,
+sort_keys=True,
+indent=2
+)
+return hashlib.sha256(
+content.encode()
+).hexdigest()
+def save_if_changed(section, data):
+os.makedirs(BACKUP_DIR, exist_ok=True)
+hash_file = f"{BACKUP_DIR}/{section}.hash"
+current_hash = calculate_hash(data)
+previous_hash = ""
+if os.path.exists(hash_file):
+with open(hash_file, "r") as f:
+previous_hash = f.read().strip()
+if current_hash != previous_hash:
+timestamp = datetime.now().strftime(
+"%Y%m%d_%H%M%S"
+)
+backup_file = (
+f"{BACKUP_DIR}/"
+f"{section}_{timestamp}.json"
+)
+with open(backup_file, "w") as f:
+json.dump(
+data,
+f,
+indent=4
+)
+with open(hash_file, "w") as f:
+f.write(current_hash)
+print(
+f"[CHANGE] {section} changed. "
+f"Backup saved: {backup_file}"
+)
+else:
+print(
+f"[OK] No changes detected: {section}"
+)
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
+def main():
+print("Collecting interface configuration...")
+interfaces = get_fortigate_config(
+"system/interface"
+)
+parsed_interfaces = parse_interfaces(
+interfaces
+)
+save_if_changed(
+"interfaces",
+parsed_interfaces
+)
+print("Collecting routing configuration...")
+routes = get_fortigate_config(
+"router/static"
+)
+parsed_routes = parse_routes(
+routes
+)
+save_if_changed(
+"routes",
+parsed_routes
+)
+print("Completed.")
+if __name__ == "__main__":
+main()
+CONFIG_SECTIONS = {
+    "interfaces": "system/interface",
+    "routes": "router/static",
+    "bgp": "router/bgp",
+    "ospf": "router/ospf",
+    "zones": "system/zone",
+    "policy": "firewall/policy"
+}
